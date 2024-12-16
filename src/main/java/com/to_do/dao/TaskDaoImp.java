@@ -1,26 +1,28 @@
 package com.to_do.dao;
 
-import com.to_do.entity.Task;
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.stereotype.Component;
-
-import javax.sql.DataSource;
-import java.sql.*;
+import java.sql.Connection;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
+import java.sql.SQLException;
+import java.sql.Statement;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.List;
+import javax.sql.DataSource;
+import java.sql.Timestamp;
+import com.to_do.entity.Task;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
-@Component
-public class TaskDaoImp implements TaskDao{
-
+public class TaskDaoImp {
     private final DataSource dataSource;
 
-    @Autowired
     public TaskDaoImp(DataSource dataSource) {
         this.dataSource = dataSource;
     }
 
-    @Override
+    Logger logger = LoggerFactory.getLogger(TaskDaoImp.class);
+
     public Task save(Task task) {
         String sql = "INSERT INTO task (title, finished, created_date) VALUES (?, ?, ?)";
         try(
@@ -46,7 +48,6 @@ public class TaskDaoImp implements TaskDao{
         return task;
     }
 
-    @Override
     public List<Task> findAll() {
         List<Task> tasks = new ArrayList<>();
         String sql = "SELECT task_id, title, finished, created_date FROM task ORDER BY task_id";
@@ -66,13 +67,13 @@ public class TaskDaoImp implements TaskDao{
             }
 
         } catch (SQLException throwables) {
+            logger.error("Error while finding all", throwables);
             throw new RuntimeException(throwables);
         }
 
         return tasks;
     }
 
-    @Override
     public int deleteAll() {
         String sql = "DELETE FROM task";
         try(Connection connection = dataSource.getConnection();
@@ -82,12 +83,14 @@ public class TaskDaoImp implements TaskDao{
             return  result;
 
         } catch (SQLException e) {
+            logger.error("Error while deleting all: {}", String.valueOf(e));
             throw new RuntimeException("Error while deleting all tasks", e);
         }
+
     }
 
-    @Override
     public Task getById(Integer id) {
+
         String sql = "SELECT * FROM task WHERE task_id = ?";
 
         try(Connection connection = dataSource.getConnection();
@@ -107,16 +110,15 @@ public class TaskDaoImp implements TaskDao{
                     task.setId(resultSet.getInt(1));
                     return task;
                 }else {
-                    //throw new RuntimeException("Task not found with id: " + id);
                     return null;
                 }
             }
         } catch (SQLException e) {
+            logger.error("Error fetching task with id: {}", id, e);
             throw new RuntimeException("Error fetching task with id: " + id, e);
         }
     }
 
-    @Override
     public List<Task> findAllNotFinished() {
         List<Task> notFinishedTask = new ArrayList<>();
         String sql = "SELECT * from task WHERE finished = false";
@@ -124,23 +126,20 @@ public class TaskDaoImp implements TaskDao{
              Statement statement = connection.createStatement()) {
             try (ResultSet rs = statement.executeQuery(sql)) {
                 while (rs.next()) {
-                    Task task = new Task(
-                            rs.getString(2),
-                            rs.getBoolean(3),
-                            rs.getTimestamp(4).toLocalDateTime().truncatedTo(ChronoUnit.SECONDS));
-                    task.setId(rs.getInt(1));
+                    Task task = taskFromResultSet(rs);
                     notFinishedTask.add(task);
                 }
             } catch (SQLException e) {
+                logger.error("SQLException while fetching not finished tasks: {}", String.valueOf(e));
                 throw new RuntimeException("Error fetching not finished tasks: " + e);
             }
         } catch (SQLException e) {
+            logger.error("SQLException fetching not finished tasks: {}", String.valueOf(e));
             throw new RuntimeException("Error fetching not finished tasks: " + e);
         }
         return notFinishedTask;
     }
 
-    @Override
     public List<Task> findNewestTasks(Integer numberOfNewestTasks) {
         List<Task> newTasks = new ArrayList<>();
         String sql = "SELECT task_id, title, finished, created_date FROM task ORDER BY created_date DESC LIMIT ?";
@@ -150,50 +149,80 @@ public class TaskDaoImp implements TaskDao{
             statement.setInt(1, numberOfNewestTasks);
             try(ResultSet rs = statement.executeQuery()){
                 while (rs.next()){
-                    Task task = new Task(
-                            rs.getString(2),
-                            rs.getBoolean(3),
-                            rs.getTimestamp(4).toLocalDateTime().truncatedTo(ChronoUnit.SECONDS));
-                    task.setId(rs.getInt(1));
+                    Task task = taskFromResultSet(rs);
                     newTasks.add(task);
                 }
             }
         } catch (SQLException e) {
+            logger.error("Error fetching new tasks: {}", String.valueOf(e));
             throw new RuntimeException("Error fetching new tasks: " + e);
-        } return newTasks;
-    }
-
-    @Override
-    public Task finishTask(Task task) {
-        Task taskTofinish = new Task(task.getTitle(), true, task.getCreatedDate());
-        taskTofinish.setId(task.getId());
-
-        String sql = "UPDATE task SET title = ?, finished = ?, created_date = ? WHERE task_id = ?";
-        try(Connection connection = dataSource.getConnection();
-            PreparedStatement statement = connection.prepareStatement(sql);){
-            statement.setString(1, task.getTitle());
-            statement.setBoolean(2, true);
-            statement.setTimestamp(3, Timestamp.valueOf(task.getCreatedDate()));
-            statement.setInt(4, task.getId());
-            statement.executeUpdate();
-
-        } catch (SQLException e) {
-            throw new RuntimeException("Error to finish task with id " + task.getId() + ": " + e.getMessage(), e);
         }
-        return taskTofinish;
+
+
+        return newTasks;
     }
 
-    @Override
+    public void finishTask(Task task) {
+
+        if (task == null){
+            logger.debug("Task is null");
+        }
+        else {
+            Task taskTofinish = new Task(task.getTitle(), true, task.getCreatedDate());
+            taskTofinish.setId(task.getId());
+
+            String sql = "UPDATE task SET title = ?, finished = ?, created_date = ? WHERE task_id = ?";
+            try (Connection connection = dataSource.getConnection();
+                 PreparedStatement statement = connection.prepareStatement(sql);) {
+                statement.setString(1, task.getTitle());
+                statement.setBoolean(2, true);
+                statement.setTimestamp(3, Timestamp.valueOf(task.getCreatedDate()));
+                statement.setInt(4, task.getId());
+                statement.executeUpdate();
+
+            } catch (SQLException e) {
+                logger.error("Error to finish task with id = {}: {} ", task.getId(), String.valueOf(e));
+                throw new RuntimeException("Error to finish task with id " + task.getId() + ": " + e.getMessage(), e);
+            }
+        }
+    }
+
     public void deleteById(Integer id) {
-        String sql = "DELETE FROM task WHERE task_id = ?";
-
-        try(Connection connection = dataSource.getConnection();
-            PreparedStatement statement = connection.prepareStatement(sql)){
-            statement.setInt(1, id);
-            statement.executeUpdate();
-
-        } catch (SQLException e) {
-            throw new RuntimeException("Error to delete task with id " + id + ": " + e.getMessage(), e);
+        Task task = getById(id);
+        if(task == null){
+            logger.debug("Task with id = {} doesn't exist", id);
         }
+        else {
+            String sql = "DELETE FROM task WHERE task_id = ?";
+
+            try (Connection connection = dataSource.getConnection();
+                 PreparedStatement statement = connection.prepareStatement(sql)) {
+                statement.setInt(1, id);
+                statement.executeUpdate();
+
+            } catch (SQLException e) {
+                logger.error("Error to delete task with id = {}: {} ", id, String.valueOf(e));
+                throw new RuntimeException("Error to delete task with id " + id + ": " + e.getMessage(), e);
+            }
+        }
+    }
+    private Task taskFromResultSet(ResultSet rs){
+        Task task = null;
+        try {
+            task = new Task(
+                    rs.getString("title"),
+                    rs.getBoolean("finished"),
+                    rs.getTimestamp("created_date").toLocalDateTime().truncatedTo(ChronoUnit.SECONDS));
+        } catch (SQLException e) {
+            logger.error("SQLException while getting task from Result Set");
+            throw new RuntimeException(e);
+        }
+        try {
+            task.setId(rs.getInt("task_id"));
+        } catch (SQLException e) {
+            logger.error("SQLException to set Id to task getting from Result Set");
+            throw new RuntimeException(e);
+        }
+        return task;
     }
 }
